@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 scheduler = BackgroundScheduler(timezone=pytz.timezone('Asia/Manila'))
 
 def refresh_all_data():
-    """Fetch real PSE prices and save predictions to Firestore."""
+    """Fetch stock prices from static source and save to Firestore."""
     logger.info("Starting scheduled refresh of stock predictions...")
     prices = get_all_prices()
     today_str = datetime.utcnow().strftime("%Y-%m-%d")
@@ -44,7 +44,7 @@ def refresh_all_data():
             success_count += 1
             logger.info(f"Saved {symbol}: ₱{price} ({change:+.2f}%)")
         else:
-            logger.warning(f"No real data for {symbol}, keeping old Firestore value")
+            logger.warning(f"No data for {symbol}, keeping old Firestore value")
     logger.info(f"Refresh completed. Saved {success_count}/{len(BLUE_CHIPS)} predictions.")
 
 def start_scheduler():

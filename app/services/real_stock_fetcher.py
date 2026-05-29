@@ -1,45 +1,47 @@
-import requests
-import time
+import json
+import os
 import logging
-from datetime import datetime
-from dotenv import load_dotenv
-
-load_dotenv()
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Path to the static prices file
+STATIC_PRICES_PATH = Path(__file__).parent.parent.parent / "static_prices.json"
+
 BLUE_CHIPS = ["AC", "SM", "BDO", "JFC", "TEL", "MER", "GLO", "ALI", "AEV", "MBT"]
 
-def get_real_stock_price(symbol):
-    """Fetch real stock price for a PSE symbol using the free Phisix API."""
-    url = f"http://phisix-api3.appspot.com/stocks/{symbol}.json"
+def load_static_prices():
+    """Load static stock prices from JSON file."""
     try:
-        resp = requests.get(url, timeout=15)
-        if resp.status_code != 200:
-            logger.warning(f"Phisix API returned {resp.status_code} for {symbol}")
-            return None, None, False
-        data = resp.json()
-        if data and "stock" in data and data["stock"]:
-            stock_data = data["stock"][0]
-            price = float(stock_data["price"]["amount"])
-            percent_change = float(stock_data["percent_change"])
-            logger.info(f"Phisix success {symbol}: ₱{price}")
-            return price, percent_change, True
-        else:
-            logger.warning(f"No stock data for {symbol}")
-            return None, None, False
+        with open(STATIC_PRICES_PATH, "r") as f:
+            data = json.load(f)
+        return data
     except Exception as e:
-        logger.error(f"Error fetching {symbol}: {e}")
-        return None, None, False
+        logger.error(f"Failed to load static_prices.json: {e}")
+        return {}
+
+def get_real_stock_price(symbol):
+    """Return price from static JSON."""
+    prices = load_static_prices()
+    if symbol in prices:
+        price = prices[symbol]["price"]
+        change = prices[symbol]["change"]
+        logger.info(f"Static data for {symbol}: ₱{price} ({change:+.2f}%)")
+        return price, change, True
+    logger.warning(f"Symbol {symbol} not found in static prices")
+    return None, None, False
 
 def get_all_prices():
-    """Return dict of symbol -> {price, change, success}. If API fails, returns None for price."""
+    """Return dict of symbol -> {price, change, success} from static file."""
+    prices = load_static_prices()
     results = {}
     for symbol in BLUE_CHIPS:
-        price, change, success = get_real_stock_price(symbol)
-        if success:
-            results[symbol] = {"price": price, "change": change, "success": True}
+        if symbol in prices:
+            results[symbol] = {
+                "price": prices[symbol]["price"],
+                "change": prices[symbol]["change"],
+                "success": True
+            }
         else:
             results[symbol] = {"success": False, "price": None, "change": None}
-        time.sleep(0.5)  # rate limit
     return results

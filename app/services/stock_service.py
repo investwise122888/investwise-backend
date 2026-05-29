@@ -1,5 +1,5 @@
-from datetime import datetime
-from app.services.stock_data_fetcher import BLUE_CHIPS
+from datetime import datetime, timedelta
+from app.services.real_stock_fetcher import BLUE_CHIPS
 from app.database import db
 from app.models import PREDICTIONS_COLLECTION
 
@@ -35,16 +35,13 @@ def get_latest_predictions_from_firestore() -> list:
             else:
                 results.append({
                     "symbol": symbol,
-                    "signal": "NEUTRAL",
-                    "explanation": "Awaiting daily update",
                     "price": None,
-                    "change_percent": None
+                    "change_percent": None,
+                    "signal": "NEUTRAL",
+                    "explanation": "Awaiting daily update"
                 })
     return results
 
 def get_all_predictions():
     """Public API endpoint – returns cached Firestore predictions."""
     return get_latest_predictions_from_firestore()
-
-# Keep these aliases for compatibility with existing code
-PH_BLUE_CHIPS = BLUE_CHIPS

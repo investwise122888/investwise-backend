@@ -8,7 +8,6 @@ SUBSCRIPTIONS_COLLECTION = "subscriptions"
 PAYMENTS_COLLECTION = "payments"
 
 def doc_to_dict(doc):
-    """Convert Firestore document to dict with id"""
     if not doc.exists:
         return None
     data = doc.to_dict()

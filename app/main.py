@@ -50,19 +50,21 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="InvestWise API", lifespan=lifespan)
 
+# CORS – allow both local development and live frontend origins
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
         "http://localhost:5173",
-        os.getenv("FRONTEND_URL", "http://localhost:3000")
+        "https://dumakulem300.github.io",           # live frontend
+        os.getenv("FRONTEND_URL", "")
     ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
-# Include routers (they are already imported)
+# Include routers
 app.include_router(stocks.router)
 app.include_router(news.router)
 app.include_router(lessons.router)

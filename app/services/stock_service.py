@@ -45,3 +45,13 @@ def get_latest_predictions_from_firestore() -> list:
 def get_all_predictions():
     """Public API endpoint – returns cached Firestore predictions."""
     return get_latest_predictions_from_firestore()
+
+def save_predictions_to_firestore(predictions_list):
+    """Save predictions to Firestore (used by scheduler)."""
+    from firebase_admin import firestore
+    db = firestore.client()
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    for pred in predictions_list:
+        doc_id = f"{pred['symbol']}_{today}"
+        db.collection(PREDICTIONS_COLLECTION).document(doc_id).set(pred)
+    print(f"Saved {len(predictions_list)} predictions to Firestore")

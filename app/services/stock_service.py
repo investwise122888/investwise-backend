@@ -6,36 +6,33 @@ from app.models import PREDICTIONS_COLLECTION
 PH_BLUE_CHIPS = BLUE_CHIPS
 
 def get_latest_predictions_from_firestore() -> list:
-    """Retrieve the most recent available predictions for each symbol."""
+    """Retrieve the most recent prediction per symbol (last 7 days). No composite index needed."""
     results = []
     for symbol in BLUE_CHIPS:
-        # Query the latest document for this symbol, ordered by generated_at descending
-        docs = (db.collection(PREDICTIONS_COLLECTION)
-                .where("symbol", "==", symbol)
-                .order_by("generated_at", direction="DESCENDING")
-                .limit(1)
-                .stream())
-        latest_doc = next(docs, None)
-        
-        if latest_doc:
-            data = latest_doc.to_dict()
-            # Use persistent_signal if available, else fallback to 'signal' field
-            signal = data.get("persistent_signal") or data.get("signal", "NEUTRAL")
-            results.append({
-                "symbol": data["symbol"],
-                "price": data.get("price"),
-                "change_percent": data.get("change_percent"),
-                "signal": signal,
-                "explanation": data.get("explanation", "No data")
-            })
-        else:
-            # No data at all for this symbol
+        found = False
+        for days_back in range(0, 8):  # check today back to 7 days ago
+            date_str = (datetime.utcnow() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+            doc = db.collection(PREDICTIONS_COLLECTION).document(f"{symbol}_{date_str}").get()
+            if doc.exists:
+                data = doc.to_dict()
+                # Use persistent_signal if available, else fallback to 'signal' field
+                signal = data.get("persistent_signal") or data.get("signal", "NEUTRAL")
+                results.append({
+                    "symbol": data["symbol"],
+                    "price": data.get("price"),
+                    "change_percent": data.get("change_percent"),
+                    "signal": signal,
+                    "explanation": data.get("explanation", "No data")
+                })
+                found = True
+                break
+        if not found:
             results.append({
                 "symbol": symbol,
                 "price": None,
                 "change_percent": None,
                 "signal": "NEUTRAL",
-                "explanation": "No signal data available yet"
+                "explanation": "Awaiting weekly update"
             })
     return results
 

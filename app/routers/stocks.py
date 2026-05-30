@@ -9,7 +9,8 @@ import yfinance as yf
 
 router = APIRouter(prefix="/stocks", tags=["stocks"])
 
-@router.get("/")
+# Changed from @router.get("/") to @router.get("") to match /stocks exactly (no trailing slash)
+@router.get("")
 async def get_predictions(
     user_id: str = Depends(get_current_user_uid),
     user_email: str = Depends(get_current_user_email)

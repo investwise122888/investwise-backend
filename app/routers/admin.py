@@ -1,3 +1,4 @@
+import os
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from firebase_admin import auth
@@ -18,8 +19,9 @@ class PaymentRejectRequest(BaseModel):
 def get_admin_user(current_uid: str = Depends(get_current_user_uid)):
     user = auth.get_user(current_uid)
     user_email = user.email
-    # TEMPORARY HARDCODE – replace with your email or use env variable
-    admin_emails = ["dumakulem300@gmail.com"]
+    # Read admin emails from environment variable (comma-separated)
+    admin_emails_str = os.getenv("ADMIN_EMAILS", "")
+    admin_emails = [email.strip() for email in admin_emails_str.split(",") if email.strip()]
     if user_email not in admin_emails:
         raise HTTPException(status_code=403, detail="Admin access required")
     return current_uid
@@ -87,9 +89,9 @@ async def list_users_with_subscription(admin_id: str = Depends(get_admin_user)):
 
 @router.post("/refresh-data")
 async def manual_refresh_data(admin_id: str = Depends(get_admin_user)):
-    """Manually trigger the daily refresh job (stock predictions + news)."""
+    """Manually trigger weekly signal refresh."""
     try:
         manual_refresh()
-        return {"status": "success", "message": "Data refresh triggered successfully."}
+        return {"status": "success", "message": "Weekly signal refresh triggered."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

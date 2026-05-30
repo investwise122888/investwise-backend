@@ -3,57 +3,46 @@ from app.services.real_stock_fetcher import BLUE_CHIPS
 from app.database import db
 from app.models import PREDICTIONS_COLLECTION
 
-# Alias for compatibility with other modules (e.g., news.py)
 PH_BLUE_CHIPS = BLUE_CHIPS
 
 def get_latest_predictions_from_firestore() -> list:
-    """Retrieve today's predictions from Firestore."""
-    today_str = datetime.utcnow().strftime("%Y-%m-%d")
+    """Retrieve the most recent available predictions for each symbol."""
     results = []
     for symbol in BLUE_CHIPS:
-        doc_id = f"{symbol}_{today_str}"
-        doc = db.collection(PREDICTIONS_COLLECTION).document(doc_id).get()
-        if doc.exists:
-            data = doc.to_dict()
+        # Query the latest document for this symbol, ordered by generated_at descending
+        docs = (db.collection(PREDICTIONS_COLLECTION)
+                .where("symbol", "==", symbol)
+                .order_by("generated_at", direction="DESCENDING")
+                .limit(1)
+                .stream())
+        latest_doc = next(docs, None)
+        
+        if latest_doc:
+            data = latest_doc.to_dict()
+            # Use persistent_signal if available, else fallback to 'signal' field
+            signal = data.get("persistent_signal") or data.get("signal", "NEUTRAL")
             results.append({
                 "symbol": data["symbol"],
                 "price": data.get("price"),
                 "change_percent": data.get("change_percent"),
-                "signal": data.get("signal", "NEUTRAL"),
+                "signal": signal,
                 "explanation": data.get("explanation", "No data")
             })
         else:
-            yesterday = (datetime.utcnow().replace(hour=0, minute=0, second=0) - timedelta(days=1)).strftime("%Y-%m-%d")
-            doc_yest = db.collection(PREDICTIONS_COLLECTION).document(f"{symbol}_{yesterday}").get()
-            if doc_yest.exists:
-                data = doc_yest.to_dict()
-                results.append({
-                    "symbol": symbol,
-                    "price": data.get("price"),
-                    "change_percent": data.get("change_percent"),
-                    "signal": data.get("signal", "NEUTRAL"),
-                    "explanation": "Previous day data (market closed)"
-                })
-            else:
-                results.append({
-                    "symbol": symbol,
-                    "price": None,
-                    "change_percent": None,
-                    "signal": "NEUTRAL",
-                    "explanation": "Awaiting daily update"
-                })
+            # No data at all for this symbol
+            results.append({
+                "symbol": symbol,
+                "price": None,
+                "change_percent": None,
+                "signal": "NEUTRAL",
+                "explanation": "No signal data available yet"
+            })
     return results
 
 def get_all_predictions():
-    """Public API endpoint – returns cached Firestore predictions."""
+    """Public API endpoint – returns cached Firestore predictions (latest)."""
     return get_latest_predictions_from_firestore()
 
 def save_predictions_to_firestore(predictions_list):
-    """Save predictions to Firestore (used by scheduler)."""
-    from firebase_admin import firestore
-    db = firestore.client()
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    for pred in predictions_list:
-        doc_id = f"{pred['symbol']}_{today}"
-        db.collection(PREDICTIONS_COLLECTION).document(doc_id).set(pred)
-    print(f"Saved {len(predictions_list)} predictions to Firestore")
+    """Legacy function kept for compatibility; actual saving done by weekly_signal_service."""
+    pass

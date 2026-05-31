@@ -6,7 +6,7 @@ from app.models import PREDICTIONS_COLLECTION
 PH_BLUE_CHIPS = BLUE_CHIPS
 
 def get_latest_predictions_from_firestore() -> list:
-    """Retrieve the most recent prediction per symbol (last 7 days) with fundamentals fields."""
+    """Retrieve the most recent prediction per symbol (last 7 days) with strength fields."""
     results = []
     for symbol in BLUE_CHIPS:
         found = False
@@ -24,7 +24,9 @@ def get_latest_predictions_from_firestore() -> list:
                     "explanation": data.get("explanation", "No data"),
                     "fundamental_veto": data.get("fundamental_veto", False),
                     "pe_ratio": data.get("pe_ratio"),
-                    "fundamentals_pass": data.get("fundamentals_pass")
+                    "fundamentals_pass": data.get("fundamentals_pass"),
+                    "strength_score": data.get("strength_score", 0),
+                    "strength_label": data.get("strength_label", "")
                 })
                 found = True
                 break
@@ -37,7 +39,9 @@ def get_latest_predictions_from_firestore() -> list:
                 "explanation": "Awaiting weekly update",
                 "fundamental_veto": False,
                 "pe_ratio": None,
-                "fundamentals_pass": None
+                "fundamentals_pass": None,
+                "strength_score": 0,
+                "strength_label": ""
             })
     return results
 

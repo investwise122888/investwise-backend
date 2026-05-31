@@ -32,12 +32,10 @@ def fetch_csv_data():
     if len(lines) < 2:
         raise ValueError("CSV has no data rows")
     headers = [h.strip().lower() for h in lines[0].split(",")]
-    # Expected columns: symbol, date, open, high, low, close, volume
-    required = ["symbol", "date", "open", "high", "low", "close", "volume"]
+    required = ["symbol", "open", "high", "low", "close", "volume"]
     for req in required:
         if req not in headers:
             raise ValueError(f"Missing required column: {req}")
-    # Map header to index
     idx = {h: i for i, h in enumerate(headers)}
     rows = []
     for line in lines[1:]:
@@ -46,9 +44,11 @@ def fetch_csv_data():
         parts = line.split(",")
         if len(parts) < len(headers):
             continue
+        # Use current UTC date as the date for all rows
+        current_date = datetime.utcnow().strftime("%Y-%m-%d")
         row = {
             "symbol": parts[idx["symbol"]].strip().upper(),
-            "date": str(parts[idx["date"]]).replace('"', '').strip()[:10],
+            "date": current_date,
             "open": clean_number(parts[idx["open"]]),
             "high": clean_number(parts[idx["high"]]),
             "low": clean_number(parts[idx["low"]]),
@@ -69,8 +69,7 @@ def update_firestore(symbol, entry):
     # Remove existing entry with same date (avoid duplicates)
     weekly = [w for w in weekly if w.get("date") != entry["date"]]
     weekly.append(entry)
-    # Keep only last 260 entries (~5 years)
-    weekly = weekly[-260:]
+    weekly = weekly[-260:]  # keep last 260 weeks
     ref.set({
         "symbol": symbol,
         "last_updated": firestore.SERVER_TIMESTAMP,
@@ -91,7 +90,7 @@ def main():
                 "low": row["low"],
                 "close": row["close"],
                 "volume": row["volume"],
-                "change_percent": 0.0  # compute later if needed
+                "change_percent": 0.0
             }
             update_firestore(row["symbol"], entry)
         print("Scraper finished successfully.")

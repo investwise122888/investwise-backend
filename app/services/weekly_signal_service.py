@@ -13,15 +13,14 @@ from app.models import PREDICTIONS_COLLECTION
 logger = logging.getLogger(__name__)
 
 BLUE_CHIPS = ["AC", "SM", "BDO", "JFC", "TEL", "MER", "GLO", "ALI", "AEV", "MBT"]
-SIGNAL_VERSION = "v3_with_fundamentals"
+SIGNAL_VERSION = "v4_with_strength"
 MIN_ROWS_REQUIRED = 1
 
 def parse_firestore_date(val):
     val = str(val).strip()
-    # Handle Excel serial number like 46171.0
     try:
         serial = float(val)
-        if serial > 40000:  # it's an Excel date serial
+        if serial > 40000:
             from datetime import date, timedelta
             return pd.Timestamp(
                 date(1899, 12, 30) + timedelta(days=int(serial))
@@ -34,7 +33,6 @@ def parse_firestore_date(val):
 # Fetch weekly price history from Firestore (scraped data)
 # ----------------------------------------------------------------------
 def fetch_weekly_data_firestore(symbol: str) -> pd.DataFrame:
-    """Retrieve weekly OHLCV from Firestore price_history collection."""
     try:
         doc = db.collection("price_history").document(symbol).get()
         if not doc.exists:
@@ -65,7 +63,6 @@ def fetch_weekly_data_firestore(symbol: str) -> pd.DataFrame:
 # Fallbacks (Stooq, yfinance, mock)
 # ----------------------------------------------------------------------
 def fetch_weekly_data_stooq(symbol: str) -> pd.DataFrame:
-    """Fetch weekly data from Stooq CSV (fallback)."""
     url = f"https://stooq.com/q/d/l/?s={symbol}.ph&i=w"
     try:
         resp = requests.get(url, timeout=10)
@@ -85,7 +82,6 @@ def fetch_weekly_data_stooq(symbol: str) -> pd.DataFrame:
     return pd.DataFrame()
 
 def fetch_weekly_data_yfinance(symbol: str, weeks: int = 52) -> pd.DataFrame:
-    """Fetch weekly data from yfinance (fallback)."""
     try:
         ticker = yf.Ticker(f"{symbol}.PS")
         df = ticker.history(period=f"{weeks}w", interval="1wk")
@@ -97,7 +93,6 @@ def fetch_weekly_data_yfinance(symbol: str, weeks: int = 52) -> pd.DataFrame:
     return pd.DataFrame()
 
 def generate_mock_weekly(symbol: str, weeks: int = 52) -> pd.DataFrame:
-    """Generate mock weekly data as final fallback."""
     end = datetime.now()
     start = end - timedelta(weeks=weeks)
     dates = pd.date_range(start=start, end=end, freq='W-MON')
@@ -116,7 +111,6 @@ def generate_mock_weekly(symbol: str, weeks: int = 52) -> pd.DataFrame:
     return df
 
 def fetch_weekly_data(symbol: str, weeks: int = 52) -> pd.DataFrame:
-    """Primary: Firestore (scraped PSE) → Stooq → yFinance → mock."""
     df = fetch_weekly_data_firestore(symbol)
     if not df.empty and len(df) >= 1:
         return df
@@ -192,6 +186,51 @@ def get_raw_signal(trend, momentum):
     else:
         return "HOLD"
 
+def compute_strength_score(
+    rsi: float, 
+    macd_histogram: float,
+    trend: str, 
+    momentum: str,
+    fundamentals_pass: bool = False
+) -> dict:
+    score = 0
+
+    # RSI distance from 50 (max 30 pts)
+    rsi_distance = abs(rsi - 50)
+    score += min(30, rsi_distance * 0.6)
+
+    # MACD histogram magnitude (max 30 pts)
+    hist_abs = min(abs(macd_histogram), 5)
+    score += (hist_abs / 5) * 30
+
+    # Trend + momentum confirmation (max 20 pts)
+    if trend == "BULL" and momentum == "BULL":
+        score += 20
+    elif trend == "BULL" or momentum == "BULL":
+        score += 10
+    elif trend == "BEAR" and momentum == "BEAR":
+        score += 20
+    elif trend == "BEAR" or momentum == "BEAR":
+        score += 10
+
+    # Fundamentals bonus (max 20 pts)
+    if fundamentals_pass:
+        score += 20
+
+    score = round(min(100, score))
+    return score
+
+def get_strength_label(score: int, signal: str) -> str:
+    if signal == "BUY":
+        if score >= 75: return "Strong BUY"
+        if score >= 50: return "Moderate BUY"
+        return "Weak BUY"
+    elif signal == "SELL":
+        if score >= 75: return "Strong SELL"
+        if score >= 50: return "Moderate SELL"
+        return "Weak SELL"
+    return "HOLD"
+
 def apply_persistence(symbol, new_raw_signal):
     persist_ref = db.collection("signal_history").document(symbol)
     doc = persist_ref.get()
@@ -220,6 +259,25 @@ def fetch_fundamentals(symbol):
         return doc.to_dict()
     return None
 
+def save_signal_log(symbol: str, signal: dict):
+    """Save every signal to signal_log for backtest."""
+    doc_id = f"{symbol}_{datetime.utcnow().strftime('%Y-%m-%d')}"
+    db.collection("signal_log").document(doc_id).set({
+        "symbol": symbol,
+        "signal": signal.get("signal"),
+        "strength_score": signal.get("strength_score"),
+        "strength_label": signal.get("strength_label"),
+        "price_at_signal": signal.get("price"),
+        "signal_version": signal.get("signal_version"),
+        "trend": signal.get("trend"),
+        "momentum": signal.get("momentum"),
+        "fundamentals_pass": signal.get("fundamentals_pass"),
+        "generated_at": datetime.utcnow(),
+        "outcome_checked": False,
+        "outcome_price": None,
+        "outcome_return_pct": None
+    })
+
 def generate_weekly_signal(symbol):
     df = fetch_weekly_data(symbol)
     if df.empty:
@@ -244,7 +302,9 @@ def generate_weekly_signal(symbol):
             "fundamentals_pass": None,
             "pe_ratio": None,
             "eps_positive_years": None,
-            "debt_to_equity": None
+            "debt_to_equity": None,
+            "strength_score": 0,
+            "strength_label": "HOLD"
         }
     volume_ok = check_volume_guard(df)
     if not volume_ok:
@@ -265,7 +325,9 @@ def generate_weekly_signal(symbol):
             "fundamentals_pass": None,
             "pe_ratio": None,
             "eps_positive_years": None,
-            "debt_to_equity": None
+            "debt_to_equity": None,
+            "strength_score": 0,
+            "strength_label": "HOLD"
         }
 
     close = df['Close'].iloc[-1]
@@ -276,6 +338,7 @@ def generate_weekly_signal(symbol):
     rsi_val = indicators['rsi'].iloc[latest_idx] if not indicators['rsi'].isna().all() else 50
     macd_line_val = indicators['macd_line'].iloc[latest_idx] if not indicators['macd_line'].isna().all() else 0
     signal_line_val = indicators['signal_line'].iloc[latest_idx] if not indicators['signal_line'].isna().all() else 0
+    histogram_val = indicators['histogram'].iloc[latest_idx] if not indicators['histogram'].isna().all() else 0.0
     sma20_val = indicators['sma20'].iloc[latest_idx] if not indicators['sma20'].isna().all() else close
     sma40_val = indicators['sma40'].iloc[latest_idx] if not indicators['sma40'].isna().all() else close
     trend = get_trend(close, sma20_val, sma40_val)
@@ -289,6 +352,16 @@ def generate_weekly_signal(symbol):
     if fundamentals_pass is not None and not fundamentals_pass:
         final = "HOLD"
         fundamental_veto = True
+
+    # Compute strength score
+    strength_score = compute_strength_score(
+        rsi=rsi_val,
+        macd_histogram=histogram_val,
+        trend=trend,
+        momentum=momentum,
+        fundamentals_pass=bool(fundamentals_pass)
+    )
+    strength_label = get_strength_label(strength_score, final)
 
     explanation = f"Trend: {trend}, Momentum: {momentum}. Raw: {raw}. Persistence (3wk): {history} -> Final: {final}"
     if fundamental_veto:
@@ -311,7 +384,9 @@ def generate_weekly_signal(symbol):
         "fundamentals_pass": fundamentals_pass,
         "pe_ratio": fundamentals.get("pe_ratio") if fundamentals else None,
         "eps_positive_years": fundamentals.get("eps_positive_years") if fundamentals else None,
-        "debt_to_equity": fundamentals.get("debt_to_equity") if fundamentals else None
+        "debt_to_equity": fundamentals.get("debt_to_equity") if fundamentals else None,
+        "strength_score": strength_score,
+        "strength_label": strength_label
     }
 
 def generate_all_weekly_signals():
@@ -322,8 +397,10 @@ def generate_all_weekly_signals():
         if signal:
             doc_id = f"{symbol}_{today_str}"
             db.collection(PREDICTIONS_COLLECTION).document(doc_id).set(signal, merge=True)
+            # Save to signal log
+            save_signal_log(symbol, signal)
             results.append(signal)
-            logger.info(f"Weekly signal for {symbol}: {signal['signal']} (price={signal['price']})")
+            logger.info(f"Weekly signal for {symbol}: {signal['signal']} (score={signal['strength_score']})")
         if idx < len(BLUE_CHIPS) - 1:
             time.sleep(1)
     logger.info(f"Generated {len(results)} weekly signals")

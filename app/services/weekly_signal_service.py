@@ -14,10 +14,24 @@ logger = logging.getLogger(__name__)
 
 BLUE_CHIPS = ["AC", "SM", "BDO", "JFC", "TEL", "MER", "GLO", "ALI", "AEV", "MBT"]
 SIGNAL_VERSION = "v3_with_fundamentals"
-MIN_ROWS_REQUIRED = 1   # FIX 1: was 42
+MIN_ROWS_REQUIRED = 1
+
+def parse_firestore_date(val):
+    val = str(val).strip()
+    # Handle Excel serial number like 46171.0
+    try:
+        serial = float(val)
+        if serial > 40000:  # it's an Excel date serial
+            from datetime import date, timedelta
+            return pd.Timestamp(
+                date(1899, 12, 30) + timedelta(days=int(serial))
+            )
+    except (ValueError, TypeError):
+        pass
+    return pd.to_datetime(val)
 
 # ----------------------------------------------------------------------
-# NEW: Fetch weekly price history from Firestore (scraped data)
+# Fetch weekly price history from Firestore (scraped data)
 # ----------------------------------------------------------------------
 def fetch_weekly_data_firestore(symbol: str) -> pd.DataFrame:
     """Retrieve weekly OHLCV from Firestore price_history collection."""
@@ -33,7 +47,7 @@ def fetch_weekly_data_firestore(symbol: str) -> pd.DataFrame:
         rows = []
         for entry in weekly:
             rows.append({
-                "Date": pd.to_datetime(entry["date"]),
+                "Date": parse_firestore_date(entry["date"]),
                 "Open":   float(entry.get("open", entry.get("close", 0))),
                 "High":   float(entry.get("high", entry.get("close", 0))),
                 "Low":    float(entry.get("low",  entry.get("close", 0))),
@@ -103,19 +117,15 @@ def generate_mock_weekly(symbol: str, weeks: int = 52) -> pd.DataFrame:
 
 def fetch_weekly_data(symbol: str, weeks: int = 52) -> pd.DataFrame:
     """Primary: Firestore (scraped PSE) → Stooq → yFinance → mock."""
-    # 1. Firestore price_history (primary – from GitHub Actions scraper)
     df = fetch_weekly_data_firestore(symbol)
     if not df.empty and len(df) >= 1:
         return df
-    # 2. Stooq fallback
     df = fetch_weekly_data_stooq(symbol)
     if not df.empty:
         return df
-    # 3. yfinance fallback
     df = fetch_weekly_data_yfinance(symbol, weeks)
     if not df.empty:
         return df
-    # 4. Mock final fallback
     return generate_mock_weekly(symbol, weeks)
 
 # ----------------------------------------------------------------------
@@ -166,7 +176,6 @@ def get_momentum(rsi, macd_line, signal_line):
         return "NEUTRAL"
 
 def check_volume_guard(df, lookback_weeks=10):
-    # FIX 2: skip check if not enough history
     if len(df) < lookback_weeks:
         return True
     recent_volume = df['Volume'].iloc[-lookback_weeks:]

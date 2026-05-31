@@ -1,5 +1,7 @@
 import os
 import json
+import csv
+import io
 import requests
 from datetime import datetime
 import firebase_admin
@@ -21,17 +23,14 @@ if not CSV_URL:
     raise RuntimeError("GOOGLE_SHEET_CSV_URL missing")
 
 def fetch_csv_data():
-    """Download from Google Sheets and parse rows.
-    Handles both CSV and TSV formats automatically.
-    Numbers with commas like 1,184.00 are cleaned."""
+    """Download from Google Sheets and parse rows using csv module.
+    Handles both CSV and TSV formats and quoted fields like "1,184.00"."""
     resp = requests.get(CSV_URL, timeout=30)
     resp.raise_for_status()
-    lines = resp.text.strip().split("\n")
-    if len(lines) < 2:
-        raise ValueError("CSV has no data rows")
+    text = resp.text.strip()
 
-    # Auto-detect delimiter: tab or comma
-    first_line = lines[0]
+    # Auto-detect delimiter
+    first_line = text.split("\n")[0]
     delimiter = "\t" if "\t" in first_line else ","
 
     def clean(val: str) -> str:
@@ -40,31 +39,29 @@ def fetch_csv_data():
     def clean_number(val: str) -> float:
         return float(clean(val))
 
-    headers = [clean(h).lower() for h in first_line.split(delimiter)]
+    reader = csv.DictReader(io.StringIO(text), delimiter=delimiter)
+    # Normalize header names
+    reader.fieldnames = [clean(h).lower() for h in reader.fieldnames]
+
     required = ["symbol", "open", "high", "low", "close", "volume"]
     for req in required:
-        if req not in headers:
+        if req not in reader.fieldnames:
             raise ValueError(f"Missing required column: {req}")
 
-    idx = {h: i for i, h in enumerate(headers)}
     rows = []
-    for line in lines[1:]:
-        if not line.strip():
+    current_date = datetime.utcnow().strftime("%Y-%m-%d")
+    for row in reader:
+        if not row.get("symbol", "").strip():
             continue
-        parts = line.split(delimiter)
-        if len(parts) < len(headers):
-            continue
-        current_date = datetime.utcnow().strftime("%Y-%m-%d")
-        row = {
-            "symbol": clean(parts[idx["symbol"]]).upper(),
+        rows.append({
+            "symbol": clean(row["symbol"]).upper(),
             "date":   current_date,
-            "open":   clean_number(parts[idx["open"]]),
-            "high":   clean_number(parts[idx["high"]]),
-            "low":    clean_number(parts[idx["low"]]),
-            "close":  clean_number(parts[idx["close"]]),
-            "volume": int(clean_number(parts[idx["volume"]]))
-        }
-        rows.append(row)
+            "open":   clean_number(row["open"]),
+            "high":   clean_number(row["high"]),
+            "low":    clean_number(row["low"]),
+            "close":  clean_number(row["close"]),
+            "volume": int(clean_number(row["volume"]))
+        })
     return rows
 
 def update_firestore(symbol, entry):

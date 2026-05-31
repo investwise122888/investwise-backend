@@ -21,30 +21,28 @@ MIN_ROWS_REQUIRED = 42
 # ----------------------------------------------------------------------
 def fetch_weekly_data_firestore(symbol: str) -> pd.DataFrame:
     """Retrieve weekly OHLCV from Firestore price_history collection."""
-    doc_ref = db.collection("price_history").document(symbol)
-    doc = doc_ref.get()
+    doc = db.collection("price_history").document(symbol).get()
     if not doc.exists:
         return pd.DataFrame()
-    data = doc.to_dict()
-    weekly = data.get("weekly", [])
+    weekly = doc.to_dict().get("weekly", [])
     if not weekly:
         return pd.DataFrame()
     rows = []
-    for entry in weekly:
+    for w in weekly:
         rows.append({
-            "Date": pd.to_datetime(entry["date"]),
-            "Open": entry["open"],
-            "High": entry["high"],
-            "Low": entry["low"],
-            "Close": entry["close"],
-            "Volume": entry["volume"]
+            "Date": pd.to_datetime(w["date"]),
+            "Open": w["open"],
+            "High": w["high"],
+            "Low": w["low"],
+            "Close": w["close"],
+            "Volume": w["volume"]
         })
     df = pd.DataFrame(rows).set_index("Date").sort_index(ascending=True)
-    logger.info(f"Firestore price_history success for {symbol}, rows={len(df)}")
+    logger.info(f"Firestore price_history for {symbol}: {len(df)} weeks")
     return df
 
 # ----------------------------------------------------------------------
-# Fallbacks (Stooq, yfinance, mock) – unchanged except removed Alpha Vantage
+# Fallbacks (Stooq, yfinance, mock)
 # ----------------------------------------------------------------------
 def fetch_weekly_data_stooq(symbol: str) -> pd.DataFrame:
     """Fetch weekly data from Stooq CSV (fallback)."""
@@ -98,24 +96,20 @@ def generate_mock_weekly(symbol: str, weeks: int = 52) -> pd.DataFrame:
     return df
 
 def fetch_weekly_data(symbol: str, weeks: int = 52) -> pd.DataFrame:
-    """Primary: Firestore price_history → Stooq → yFinance → mock."""
-    # 1. Firestore (scraped PSE data)
+    """Primary: Firestore (scraped PSE) → Stooq → yFinance → mock."""
     df = fetch_weekly_data_firestore(symbol)
     if not df.empty:
         return df
-    # 2. Stooq (fallback)
     df = fetch_weekly_data_stooq(symbol)
     if not df.empty:
         return df
-    # 3. yfinance (fallback)
     df = fetch_weekly_data_yfinance(symbol, weeks)
     if not df.empty:
         return df
-    # 4. Mock (final fallback)
     return generate_mock_weekly(symbol, weeks)
 
 # ----------------------------------------------------------------------
-# Technical indicators, signal generation (unchanged except removed Phisix override)
+# Technical indicators, signal generation
 # ----------------------------------------------------------------------
 def compute_weekly_indicators(df):
     close = df['Close']
@@ -252,7 +246,6 @@ def generate_weekly_signal(symbol):
             "debt_to_equity": None
         }
 
-    # Use the latest values from the DataFrame
     close = df['Close'].iloc[-1]
     prev_close = df['Close'].iloc[-2] if len(df) > 1 else close
     change_pct = ((close - prev_close) / prev_close) * 100
@@ -268,7 +261,6 @@ def generate_weekly_signal(symbol):
     raw = get_raw_signal(trend, momentum)
     final, history = apply_persistence(symbol, raw)
 
-    # Fundamentals gate
     fundamentals = fetch_fundamentals(symbol)
     fundamentals_pass = fundamentals.get("fundamentals_pass") if fundamentals else None
     fundamental_veto = False
@@ -280,8 +272,6 @@ def generate_weekly_signal(symbol):
     if fundamental_veto:
         explanation += " (Fundamentals veto applied)"
 
-    # Note: Price is already from the DataFrame (which came from Firestore if available)
-    # No separate Phisix call needed.
     return {
         "symbol": symbol,
         "signal": final,
@@ -313,7 +303,7 @@ def generate_all_weekly_signals():
             results.append(signal)
             logger.info(f"Weekly signal for {symbol}: {signal['signal']} (price={signal['price']})")
         if idx < len(BLUE_CHIPS) - 1:
-            time.sleep(1)  # mild delay
+            time.sleep(1)
     logger.info(f"Generated {len(results)} weekly signals")
     return results
 

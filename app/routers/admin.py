@@ -8,6 +8,7 @@ from app.services.payment_service import verify_payment, reject_payment
 from app.database import db
 from app.models import PAYMENTS_COLLECTION, SUBSCRIPTIONS_COLLECTION
 from app.services.scheduler import manual_refresh
+from app.services.ai_research_service import refresh_ai_research   # Phase E
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -99,5 +100,14 @@ async def manual_refresh_data(admin_id: str = Depends(get_admin_user)):
     try:
         manual_refresh()
         return {"status": "success", "message": "Weekly signal refresh triggered."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Phase E: manual trigger for AI research refresh
+@router.post("/refresh-ai")
+async def manual_refresh_ai(admin_id: str = Depends(get_admin_user)):
+    try:
+        refresh_ai_research()
+        return {"status": "success", "message": "AI research refreshed."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

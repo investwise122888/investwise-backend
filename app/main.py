@@ -71,7 +71,7 @@ app.include_router(news.router)
 app.include_router(lessons.router)
 app.include_router(subscription.router)
 app.include_router(admin.router)
-app.include_router(ai_research.router)   # Phase E
+app.include_router(ai_research.router)  # Phase E – fixed
 
 @app.get("/")
 def root():

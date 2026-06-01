@@ -11,7 +11,8 @@ async def compute_backtest_stats(holding_weeks: int = 4):
     cached = cache_doc.get()
     if cached.exists:
         data = cached.to_dict()
-        if (datetime.utcnow() - data.get("computed_at").replace(tzinfo=None)).total_seconds() < 86400:
+        computed_at = data.get("computed_at")
+        if computed_at and (datetime.utcnow() - computed_at.replace(tzinfo=None)).total_seconds() < 86400:
             return data
 
     signals = []

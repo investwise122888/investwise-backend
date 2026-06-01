@@ -1,283 +1,3 @@
-import os
-import time
-import yfinance as yf
-import pandas as pd
-import logging
-import io
-import requests
-from datetime import datetime, timedelta
-from requests.exceptions import RequestException
-from app.database import db
-from app.models import PREDICTIONS_COLLECTION
-
-logger = logging.getLogger(__name__)
-
-BLUE_CHIPS = ["AC", "SM", "BDO", "JFC", "TEL", "MER", "GLO", "ALI", "AEV", "MBT"]
-SIGNAL_VERSION = "v4_with_strength"
-MIN_ROWS_REQUIRED = 1
-
-def parse_firestore_date(val):
-    val = str(val).strip()
-    try:
-        serial = float(val)
-        if serial > 40000:
-            from datetime import date, timedelta
-            return pd.Timestamp(
-                date(1899, 12, 30) + timedelta(days=int(serial))
-            )
-    except (ValueError, TypeError):
-        pass
-    return pd.to_datetime(val)
-
-# ----------------------------------------------------------------------
-# Fetch weekly price history from Firestore (scraped data)
-# ----------------------------------------------------------------------
-def fetch_weekly_data_firestore(symbol: str) -> pd.DataFrame:
-    try:
-        doc = db.collection("price_history").document(symbol).get()
-        if not doc.exists:
-            logger.warning(f"No price_history in Firestore for {symbol}")
-            return pd.DataFrame()
-        data = doc.to_dict()
-        weekly = data.get("weekly", [])
-        if not weekly:
-            return pd.DataFrame()
-        rows = []
-        for entry in weekly:
-            rows.append({
-                "Date": parse_firestore_date(entry["date"]),
-                "Open":   float(entry.get("open", entry.get("close", 0))),
-                "High":   float(entry.get("high", entry.get("close", 0))),
-                "Low":    float(entry.get("low",  entry.get("close", 0))),
-                "Close":  float(entry["close"]),
-                "Volume": float(entry.get("volume", 1000000))
-            })
-        df = pd.DataFrame(rows).set_index("Date").sort_index(ascending=True)
-        logger.info(f"Firestore price_history loaded for {symbol}, rows={len(df)}")
-        return df
-    except Exception as e:
-        logger.warning(f"Firestore price_history failed for {symbol}: {e}")
-        return pd.DataFrame()
-
-# ----------------------------------------------------------------------
-# Fallbacks (Stooq, yfinance, mock)
-# ----------------------------------------------------------------------
-def fetch_weekly_data_stooq(symbol: str) -> pd.DataFrame:
-    url = f"https://stooq.com/q/d/l/?s={symbol}.ph&i=w"
-    try:
-        resp = requests.get(url, timeout=10)
-        if resp.status_code == 200:
-            df = pd.read_csv(io.StringIO(resp.text))
-            if not df.empty and 'Date' in df.columns:
-                df.index = pd.to_datetime(df['Date'])
-                df = df.sort_index(ascending=True)
-                df = df.rename(columns={
-                    'Open': 'Open', 'High': 'High', 'Low': 'Low', 'Close': 'Close', 'Volume': 'Volume'
-                })
-                df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
-                logger.info(f"Stooq direct CSV success for {symbol}, rows={len(df)}")
-                return df
-    except Exception as e:
-        logger.warning(f"Stooq CSV failed for {symbol}: {e}")
-    return pd.DataFrame()
-
-def fetch_weekly_data_yfinance(symbol: str, weeks: int = 52) -> pd.DataFrame:
-    try:
-        ticker = yf.Ticker(f"{symbol}.PS")
-        df = ticker.history(period=f"{weeks}w", interval="1wk")
-        if not df.empty:
-            logger.info(f"yfinance success for {symbol}")
-            return df
-    except Exception as e:
-        logger.warning(f"yfinance failed for {symbol}: {e}")
-    return pd.DataFrame()
-
-def generate_mock_weekly(symbol: str, weeks: int = 52) -> pd.DataFrame:
-    end = datetime.now()
-    start = end - timedelta(weeks=weeks)
-    dates = pd.date_range(start=start, end=end, freq='W-MON')
-    n = len(dates)
-    base = 100 + (pd.RangeIndex(n) * 0.5) + (pd.RangeIndex(n) ** 2 * 0.01)
-    noise_factor = hash(symbol) % 100 / 1000
-    prices = (base * (1 + 0.1 * noise_factor)).values
-    df = pd.DataFrame({
-        'Open': prices,
-        'High': prices * 1.02,
-        'Low': prices * 0.98,
-        'Close': prices,
-        'Volume': [1000000] * n
-    }, index=dates)
-    logger.warning(f"No weekly data for {symbol}, using mock data (estimated)")
-    return df
-
-def fetch_weekly_data(symbol: str, weeks: int = 52) -> pd.DataFrame:
-    df = fetch_weekly_data_firestore(symbol)
-    if not df.empty and len(df) >= 1:
-        return df
-    df = fetch_weekly_data_stooq(symbol)
-    if not df.empty:
-        return df
-    df = fetch_weekly_data_yfinance(symbol, weeks)
-    if not df.empty:
-        return df
-    return generate_mock_weekly(symbol, weeks)
-
-# ----------------------------------------------------------------------
-# Technical indicators, signal generation
-# ----------------------------------------------------------------------
-def compute_weekly_indicators(df):
-    close = df['Close']
-    delta = close.diff()
-    gain = delta.where(delta > 0, 0).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
-    exp1 = close.ewm(span=12, adjust=False).mean()
-    exp2 = close.ewm(span=26, adjust=False).mean()
-    macd_line = exp1 - exp2
-    signal_line = macd_line.ewm(span=9, adjust=False).mean()
-    histogram = macd_line - signal_line
-    sma20 = close.rolling(20).mean()
-    sma40 = close.rolling(40).mean()
-    return {
-        'rsi': rsi,
-        'macd_line': macd_line,
-        'signal_line': signal_line,
-        'histogram': histogram,
-        'sma20': sma20,
-        'sma40': sma40,
-        'close': close
-    }
-
-def get_trend(close, sma20, sma40):
-    if close is None or sma20 is None or sma40 is None:
-        return "NEUTRAL"
-    if close > sma20 and sma20 > sma40:
-        return "BULL"
-    elif close < sma20 and sma20 < sma40:
-        return "BEAR"
-    else:
-        return "NEUTRAL"
-
-def get_momentum(rsi, macd_line, signal_line):
-    if rsi is None or macd_line is None or signal_line is None:
-        return "NEUTRAL"
-    if 50 <= rsi <= 75 and macd_line > signal_line:
-        return "BULL"
-    elif rsi < 45 and macd_line < signal_line:
-        return "BEAR"
-    else:
-        return "NEUTRAL"
-
-def check_volume_guard(df, lookback_weeks=10):
-    if len(df) < lookback_weeks:
-        return True
-    recent_volume = df['Volume'].iloc[-lookback_weeks:]
-    zero_volume_count = (recent_volume == 0).sum()
-    return zero_volume_count <= 2
-
-def get_raw_signal(trend, momentum):
-    bullish_count = (trend == "BULL") + (momentum == "BULL")
-    bearish_count = (trend == "BEAR") + (momentum == "BEAR")
-    if bullish_count >= 2:
-        return "BUY"
-    elif bearish_count >= 2:
-        return "SELL"
-    else:
-        return "HOLD"
-
-def compute_strength_score(
-    rsi: float, 
-    macd_histogram: float,
-    trend: str, 
-    momentum: str,
-    fundamentals_pass: bool = False
-) -> dict:
-    score = 0
-
-    # RSI distance from 50 (max 30 pts)
-    rsi_distance = abs(rsi - 50)
-    score += min(30, rsi_distance * 0.6)
-
-    # MACD histogram magnitude (max 30 pts)
-    hist_abs = min(abs(macd_histogram), 5)
-    score += (hist_abs / 5) * 30
-
-    # Trend + momentum confirmation (max 20 pts)
-    if trend == "BULL" and momentum == "BULL":
-        score += 20
-    elif trend == "BULL" or momentum == "BULL":
-        score += 10
-    elif trend == "BEAR" and momentum == "BEAR":
-        score += 20
-    elif trend == "BEAR" or momentum == "BEAR":
-        score += 10
-
-    # Fundamentals bonus (max 20 pts)
-    if fundamentals_pass:
-        score += 20
-
-    score = round(min(100, score))
-    return score
-
-def get_strength_label(score: int, signal: str) -> str:
-    if signal == "BUY":
-        if score >= 75: return "Strong BUY"
-        if score >= 50: return "Moderate BUY"
-        return "Weak BUY"
-    elif signal == "SELL":
-        if score >= 75: return "Strong SELL"
-        if score >= 50: return "Moderate SELL"
-        return "Weak SELL"
-    return "HOLD"
-
-def apply_persistence(symbol, new_raw_signal):
-    persist_ref = db.collection("signal_history").document(symbol)
-    doc = persist_ref.get()
-    if doc.exists:
-        history = doc.to_dict().get("raw_signals", [])
-    else:
-        history = []
-    history.append(new_raw_signal)
-    if len(history) > 3:
-        history.pop(0)
-    persist_ref.set({"raw_signals": history})
-    if len(history) == 3:
-        if all(s == "BUY" for s in history):
-            final = "BUY"
-        elif all(s == "SELL" for s in history):
-            final = "SELL"
-        else:
-            final = "HOLD"
-    else:
-        final = "HOLD"
-    return final, history
-
-def fetch_fundamentals(symbol):
-    doc = db.collection("fundamentals").document(symbol).get()
-    if doc.exists:
-        return doc.to_dict()
-    return None
-
-def save_signal_log(symbol: str, signal: dict):
-    """Save every signal to signal_log for backtest."""
-    doc_id = f"{symbol}_{datetime.utcnow().strftime('%Y-%m-%d')}"
-    db.collection("signal_log").document(doc_id).set({
-        "symbol": symbol,
-        "signal": signal.get("signal"),
-        "strength_score": signal.get("strength_score"),
-        "strength_label": signal.get("strength_label"),
-        "price_at_signal": signal.get("price"),
-        "signal_version": signal.get("signal_version"),
-        "trend": signal.get("trend"),
-        "momentum": signal.get("momentum"),
-        "fundamentals_pass": signal.get("fundamentals_pass"),
-        "generated_at": datetime.utcnow(),
-        "outcome_checked": False,
-        "outcome_price": None,
-        "outcome_return_pct": None
-    })
-
 def generate_weekly_signal(symbol):
     df = fetch_weekly_data(symbol)
     if df.empty:
@@ -288,7 +8,7 @@ def generate_weekly_signal(symbol):
         return {
             "symbol": symbol,
             "signal": "INSUFFICIENT_DATA",
-            "explanation": f"Not enough historical data ({len(df)} weeks)",
+            "explanation": "Not enough historical data to generate a reliable signal. Check back after a few weeks.",
             "signal_version": SIGNAL_VERSION,
             "price": None,
             "change_percent": None,
@@ -363,9 +83,20 @@ def generate_weekly_signal(symbol):
     )
     strength_label = get_strength_label(strength_score, final)
 
-    explanation = f"Trend: {trend}, Momentum: {momentum}. Raw: {raw}. Persistence (3wk): {history} -> Final: {final}"
-    if fundamental_veto:
-        explanation += " (Fundamentals veto applied)"
+    # --- New user‑friendly explanation ---
+    if final == "INSUFFICIENT_DATA":
+        explanation = "Not enough historical data to generate a reliable signal. Check back after a few weeks."
+    elif final == "BUY":
+        explanation = f"BUY signal with strength {strength_score}/100. The stock shows strong upward momentum and healthy fundamentals. Consider adding to your long‑term portfolio."
+    elif final == "SELL":
+        explanation = f"SELL signal with strength {strength_score}/100. The stock shows weakness. Consider reducing exposure or waiting for a better entry point."
+    else:  # final == "HOLD"
+        if fundamental_veto:
+            explanation = f"Strength {strength_score}/100. Technical signals suggest BUY, but the company fails our financial health check (e.g., high debt or weak earnings). Hold for now."
+        elif strength_score < 40:
+            explanation = f"Strength {strength_score}/100. No strong signal. The stock is moving sideways. Wait for clearer direction."
+        else:
+            explanation = f"Strength {strength_score}/100. The stock is stable but not trending strongly. Hold existing positions."
 
     return {
         "symbol": symbol,
@@ -388,23 +119,3 @@ def generate_weekly_signal(symbol):
         "strength_score": strength_score,
         "strength_label": strength_label
     }
-
-def generate_all_weekly_signals():
-    today_str = datetime.utcnow().strftime("%Y-%m-%d")
-    results = []
-    for idx, symbol in enumerate(BLUE_CHIPS):
-        signal = generate_weekly_signal(symbol)
-        if signal:
-            doc_id = f"{symbol}_{today_str}"
-            db.collection(PREDICTIONS_COLLECTION).document(doc_id).set(signal, merge=True)
-            # Save to signal log
-            save_signal_log(symbol, signal)
-            results.append(signal)
-            logger.info(f"Weekly signal for {symbol}: {signal['signal']} (score={signal['strength_score']})")
-        if idx < len(BLUE_CHIPS) - 1:
-            time.sleep(1)
-    logger.info(f"Generated {len(results)} weekly signals")
-    return results
-
-def manual_refresh_signals():
-    generate_all_weekly_signals()

@@ -7,6 +7,7 @@ import nest_asyncio
 from app.services.weekly_signal_service import generate_all_weekly_signals
 from app.services.news_sentiment import get_news_for_symbol, save_news_to_firestore
 from app.services.real_stock_fetcher import BLUE_CHIPS
+from app.services.ai_research_service import refresh_ai_research   # Phase E
 
 logger = logging.getLogger(__name__)
 scheduler = BackgroundScheduler(timezone=pytz.timezone('Asia/Manila'))
@@ -35,6 +36,12 @@ def refresh_all_data():
         loop.run_until_complete(refresh_news())
     except Exception as e:
         logger.error(f"News refresh failed: {e}")
+    # Phase E: refresh AI research after signals and news
+    try:
+        refresh_ai_research()
+        logger.info("AI research refresh completed.")
+    except Exception as e:
+        logger.error(f"AI research refresh failed: {e}")
 
 def start_scheduler():
     if not scheduler.running:

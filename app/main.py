@@ -15,7 +15,7 @@ logger.info("Starting InvestWise API...")
 # Import dependencies after logging setup to catch import errors
 try:
     from app.database import get_db
-    from app.routers import stocks, news, lessons, subscription, admin, ai_research
+    from app.routers import stocks, news, lessons, subscription, admin, ai_research, backtest
     from app.services.scheduler import start_scheduler, stop_scheduler, manual_refresh
     from app.services.stock_service import get_latest_predictions_from_firestore
     logger.info("All modules imported successfully")
@@ -71,7 +71,8 @@ app.include_router(news.router)
 app.include_router(lessons.router)
 app.include_router(subscription.router)
 app.include_router(admin.router)
-app.include_router(ai_research.router)  # Phase E/F – AI Research endpoint
+app.include_router(ai_research.router)
+app.include_router(backtest.router)   # Phase H
 
 @app.get("/")
 def root():

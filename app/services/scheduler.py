@@ -38,7 +38,8 @@ def refresh_all_data():
         logger.error(f"News refresh failed: {e}")
     # Phase E: refresh AI research after signals and news
     try:
-        loop.run_until_complete(refresh_ai_research())
+        # Use asyncio.run() to handle the async function from a sync context
+        asyncio.run(refresh_ai_research())
         logger.info("AI research refresh completed.")
     except Exception as e:
         logger.error(f"AI research refresh failed: {e}")

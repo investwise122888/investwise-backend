@@ -12,6 +12,7 @@ from app.models import PREDICTIONS_COLLECTION
 
 logger = logging.getLogger(__name__)
 
+# ORIGINAL 10 BLUE CHIPS ONLY
 BLUE_CHIPS = ["AC", "SM", "BDO", "JFC", "TEL", "MER", "GLO", "ALI", "AEV", "MBT"]
 SIGNAL_VERSION = "v4_with_strength"
 MIN_ROWS_REQUIRED = 1
@@ -192,18 +193,12 @@ def compute_strength_score(
     trend: str, 
     momentum: str,
     fundamentals_pass: bool = False
-) -> dict:
+):
     score = 0
-
-    # RSI distance from 50 (max 30 pts)
     rsi_distance = abs(rsi - 50)
     score += min(30, rsi_distance * 0.6)
-
-    # MACD histogram magnitude (max 30 pts)
     hist_abs = min(abs(macd_histogram), 5)
     score += (hist_abs / 5) * 30
-
-    # Trend + momentum confirmation (max 20 pts)
     if trend == "BULL" and momentum == "BULL":
         score += 20
     elif trend == "BULL" or momentum == "BULL":
@@ -212,11 +207,8 @@ def compute_strength_score(
         score += 20
     elif trend == "BEAR" or momentum == "BEAR":
         score += 10
-
-    # Fundamentals bonus (max 20 pts)
     if fundamentals_pass:
         score += 20
-
     score = round(min(100, score))
     return score
 
@@ -259,25 +251,6 @@ def fetch_fundamentals(symbol):
         return doc.to_dict()
     return None
 
-def save_signal_log(symbol: str, signal: dict):
-    """Save every signal to signal_log for backtest."""
-    doc_id = f"{symbol}_{datetime.utcnow().strftime('%Y-%m-%d')}"
-    db.collection("signal_log").document(doc_id).set({
-        "symbol": symbol,
-        "signal": signal.get("signal"),
-        "strength_score": signal.get("strength_score"),
-        "strength_label": signal.get("strength_label"),
-        "price_at_signal": signal.get("price"),
-        "signal_version": signal.get("signal_version"),
-        "trend": signal.get("trend"),
-        "momentum": signal.get("momentum"),
-        "fundamentals_pass": signal.get("fundamentals_pass"),
-        "generated_at": datetime.utcnow(),
-        "outcome_checked": False,
-        "outcome_price": None,
-        "outcome_return_pct": None
-    })
-
 def generate_weekly_signal(symbol):
     df = fetch_weekly_data(symbol)
     if df.empty:
@@ -288,7 +261,7 @@ def generate_weekly_signal(symbol):
         return {
             "symbol": symbol,
             "signal": "INSUFFICIENT_DATA",
-            "explanation": f"Not enough historical data ({len(df)} weeks)",
+            "explanation": "Not enough historical data to generate a reliable signal. Check back after a few weeks.",
             "signal_version": SIGNAL_VERSION,
             "price": None,
             "change_percent": None,
@@ -353,7 +326,6 @@ def generate_weekly_signal(symbol):
         final = "HOLD"
         fundamental_veto = True
 
-    # Compute strength score
     strength_score = compute_strength_score(
         rsi=rsi_val,
         macd_histogram=histogram_val,
@@ -363,9 +335,25 @@ def generate_weekly_signal(symbol):
     )
     strength_label = get_strength_label(strength_score, final)
 
-    explanation = f"Trend: {trend}, Momentum: {momentum}. Raw: {raw}. Persistence (3wk): {history} -> Final: {final}"
-    if fundamental_veto:
-        explanation += " (Fundamentals veto applied)"
+    # User-friendly explanation
+    def friendly_explanation(trend, momentum, final, fundamentals_pass, fundamental_veto):
+        if fundamental_veto:
+            return "Company financials need improvement. Staying cautious for now."
+        if final == "BUY":
+            if trend == "BULL" and momentum == "BULL":
+                return "Price trend is rising and momentum is strong. Good time to consider buying."
+            return "Technicals are pointing upward. Watching for continued strength."
+        if final == "SELL":
+            if trend == "BEAR" and momentum == "BEAR":
+                return "Price trend is falling and momentum is weak. Consider reducing exposure."
+            return "Technicals are weakening. Caution advised."
+        if trend == "BULL":
+            return "Price is trending up but needs more confirmation. Hold and watch."
+        if trend == "BEAR":
+            return "Price is under pressure. Not the right time to enter."
+        return "Market is moving sideways. Wait for a clearer signal before acting."
+
+    explanation = friendly_explanation(trend, momentum, final, fundamentals_pass, fundamental_veto)
 
     return {
         "symbol": symbol,
@@ -397,8 +385,6 @@ def generate_all_weekly_signals():
         if signal:
             doc_id = f"{symbol}_{today_str}"
             db.collection(PREDICTIONS_COLLECTION).document(doc_id).set(signal, merge=True)
-            # Save to signal log
-            save_signal_log(symbol, signal)
             results.append(signal)
             logger.info(f"Weekly signal for {symbol}: {signal['signal']} (score={signal['strength_score']})")
         if idx < len(BLUE_CHIPS) - 1:

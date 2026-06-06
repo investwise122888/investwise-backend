@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from firebase_admin import firestore
 from app.database import db
 from app.models import PAYMENTS_COLLECTION, SUBSCRIPTIONS_COLLECTION
@@ -51,7 +51,7 @@ def reject_payment(payment_id: str, admin_id: str):
     })
 
 def activate_subscription(user_id: str, plan: str):
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     if plan == "monthly":
         days = 30
     elif plan == "yearly":
@@ -75,50 +75,67 @@ def get_user_subscription(user_id: str) -> dict:
     if not doc.exists:
         return None
     data = doc.to_dict()
-    if data.get("start_date"):
+    if data.get("start_date") is not None:
         data["start_date"] = data["start_date"].isoformat()
-    if data.get("expiry_date"):
+    if data.get("expiry_date") is not None:
         data["expiry_date"] = data["expiry_date"].isoformat()
     return data
 
 def _to_datetime(value):
-    """Convert various Firestore date representations to datetime."""
+    """Convert various Firestore date representations to timezone-aware datetime."""
     if value is None:
         return None
     if isinstance(value, datetime):
+        # Ensure it's timezone-aware; if naive, assume UTC
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
         return value
     if isinstance(value, str):
         try:
-            return datetime.fromisoformat(value.replace('Z', '+00:00'))
+            dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=timezone.utc)
+            return dt
         except:
             return None
     # Firestore Timestamp object
     if hasattr(value, 'timestamp'):
-        return datetime.fromtimestamp(value.timestamp())
+        return datetime.fromtimestamp(value.timestamp(), tz=timezone.utc)
     # dict with _seconds
     if isinstance(value, dict) and '_seconds' in value:
-        return datetime.fromtimestamp(value['_seconds'])
+        return datetime.fromtimestamp(value['_seconds'], tz=timezone.utc)
     return None
 
 def check_subscription_active(user_id: str, user_email: str = None) -> bool:
     # Admin override
     if user_email and user_email in settings.ADMIN_EMAILS:
         return True
+
     subs = get_user_subscription(user_id)
-    if not subs or not subs.get("active"):
+    if not subs:
         return False
+
+    active = subs.get("active", False)
+    if not active:
+        return False
+
     expiry_raw = subs.get("expiry_date")
-    if not expiry_raw:
-        return False
-    # expiry_raw might be string from get_user_subscription (converted to isoformat)
-    # or could be original Firestore value if not converted
+    # If expiry_date is missing/null and active is true → treat as lifetime subscription
+    if expiry_raw is None:
+        return True
+
+    # expiry_raw may be string from get_user_subscription conversion or original Timestamp
     if isinstance(expiry_raw, str):
         try:
             expiry = datetime.fromisoformat(expiry_raw)
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=timezone.utc)
         except:
             return False
     else:
         expiry = _to_datetime(expiry_raw)
         if expiry is None:
-            return False
-    return expiry > datetime.utcnow()
+            # Invalid expiry format, but active is true – fallback to lifetime
+            return True
+
+    return expiry > datetime.now(timezone.utc)

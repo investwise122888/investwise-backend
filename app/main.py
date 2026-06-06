@@ -52,14 +52,22 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="InvestWise API", lifespan=lifespan, redirect_slashes=False)
 
 # CORS – allow both local development and live frontend origins
+# Explicitly allow the GitHub Pages domain and localhost
+FRONTEND_URL = os.getenv("FRONTEND_URL", "").rstrip('/')
+allowed_origins = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "https://investwise122888.github.io",           # exact GitHub Pages domain
+]
+if FRONTEND_URL:
+    allowed_origins.append(FRONTEND_URL)
+
+# For development only, you can uncomment the line below to allow all origins
+# allowed_origins.append("*")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "https://dumakulem300.github.io",           # live frontend
-        os.getenv("FRONTEND_URL", "")
-    ],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],

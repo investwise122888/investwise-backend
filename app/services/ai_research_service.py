@@ -1,9 +1,9 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from app.database import db
 from app.services.stock_service import get_latest_predictions_from_firestore
 from app.services.news_sentiment import get_news_for_symbol
-from app.services.real_stock_fetcher import BLUE_CHIPS   # fixed import
+from app.services.real_stock_fetcher import BLUE_CHIPS
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +63,27 @@ async def refresh_ai_research():
 
 def get_latest_ai_research():
     doc = db.collection("ai_research").document("latest").get()
-    if doc.exists:
-        return doc.to_dict()
-    return None
+    if not doc.exists:
+        return None
+    data = doc.to_dict()
+    generated_at = data.get("generated_at")
+    # Only trigger refresh if data is older than 24 hours
+    if generated_at and isinstance(generated_at, datetime):
+        # Ensure datetime is naive for comparison
+        if generated_at.tzinfo:
+            generated_at = generated_at.replace(tzinfo=None)
+        now_naive = datetime.utcnow()
+        age = now_naive - generated_at
+        if age.total_seconds() > 86400:  # 24 hours
+            try:
+                import asyncio
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(refresh_ai_research())
+                else:
+                    # No running loop – run in a separate thread
+                    import threading
+                    threading.Thread(target=asyncio.run, args=(refresh_ai_research(),)).start()
+            except Exception as e:
+                logger.warning(f"Could not trigger background refresh: {e}")
+    return data

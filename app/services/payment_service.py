@@ -81,6 +81,25 @@ def get_user_subscription(user_id: str) -> dict:
         data["expiry_date"] = data["expiry_date"].isoformat()
     return data
 
+def _to_datetime(value):
+    """Convert various Firestore date representations to datetime."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace('Z', '+00:00'))
+        except:
+            return None
+    # Firestore Timestamp object
+    if hasattr(value, 'timestamp'):
+        return datetime.fromtimestamp(value.timestamp())
+    # dict with _seconds
+    if isinstance(value, dict) and '_seconds' in value:
+        return datetime.fromtimestamp(value['_seconds'])
+    return None
+
 def check_subscription_active(user_id: str, user_email: str = None) -> bool:
     # Admin override
     if user_email and user_email in settings.ADMIN_EMAILS:
@@ -88,5 +107,18 @@ def check_subscription_active(user_id: str, user_email: str = None) -> bool:
     subs = get_user_subscription(user_id)
     if not subs or not subs.get("active"):
         return False
-    expiry = datetime.fromisoformat(subs["expiry_date"])
+    expiry_raw = subs.get("expiry_date")
+    if not expiry_raw:
+        return False
+    # expiry_raw might be string from get_user_subscription (converted to isoformat)
+    # or could be original Firestore value if not converted
+    if isinstance(expiry_raw, str):
+        try:
+            expiry = datetime.fromisoformat(expiry_raw)
+        except:
+            return False
+    else:
+        expiry = _to_datetime(expiry_raw)
+        if expiry is None:
+            return False
     return expiry > datetime.utcnow()
